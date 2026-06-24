@@ -1,24 +1,21 @@
 import axios from 'axios';
+// STATIC import so Vercel knows 100% to include this file in the deployment
+import canvasPb from '../proto/_canvas_pb.cjs';
+
+const { CanvasRequest, CanvasResponse } = canvasPb;
 
 export default async function handler(req, res) {
-  // Allow any site to call this API
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  // Extract ID and Token from URL: ?id=...&token=...
   const { id, token } = req.query;
 
   if (!id || !token) {
     return res.status(400).json({ success: false, error: "Missing ?id=YOUR_ID or &token=YOUR_TOKEN in URL" });
   }
 
-  // Auto-format the URI just like Spotify requires
   const trackUri = id.startsWith('spotify:track:') ? id : `spotify:track:${id}`;
 
   try {
-    // Import YOUR original compiled protobuf file
-    const { CanvasRequest, CanvasResponse } = (await import('../proto/_canvas_pb.cjs')).default;
-
-    // Build the request exactly as you did in your tests
     const canvasRequest = new CanvasRequest();
     const track = new CanvasRequest.Track();
     track.setTrackUri(trackUri);
@@ -26,7 +23,6 @@ export default async function handler(req, res) {
 
     const requestBytes = canvasRequest.serializeBinary();
 
-    // Fetch from Spotify Canvas API
     const response = await axios.post(
       'https://spclient.wg.spotify.com/canvaz-cache/v0/canvases',
       requestBytes,
@@ -43,17 +39,25 @@ export default async function handler(req, res) {
       }
     );
 
-    if (response.status !== 200) {
-      return res.status(response.status).json({ success: false, error: "Canvas fetch failed from Spotify" });
-    }
-
-    // Decode using your reliable generated protobuf logic
     const parsed = CanvasResponse.deserializeBinary(response.data).toObject();
     
     return res.status(200).json({ success: true, trackId: id, data: parsed });
 
   } catch (error) {
-    console.error("Canvas Request Error:", error.message);
-    return res.status(500).json({ success: false, error: "Failed to fetch Canvas. Ensure your token is valid." });
+    // CAPTURE THE EXACT ERROR
+    let detailedError = error.message;
+
+    // If Axios fails (like a 401 or 403 from Spotify)
+    if (error.response) {
+      detailedError = `Spotify API Error: Status ${error.response.status}`;
+    }
+
+    console.error("Canvas Request Error:", detailedError);
+    
+    return res.status(500).json({ 
+      success: false, 
+      error: detailedError,
+      hint: "If status is 401, your token is expired or invalid."
+    });
   }
 }
