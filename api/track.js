@@ -1,83 +1,59 @@
 import axios from 'axios';
-import protobuf from 'protobufjs';
 
-// 1. We dynamically define the Spotify Canvas structure here so you don't need any external proto files!
-const protoDefinition = `
-syntax = "proto3";
-
-message CanvasRequest {
-  message Track {
-    string track_uri = 1;
-  }
-  repeated Track tracks = 1;
-}
-
-message CanvasResponse {
-  message Canvas {
-    string id = 1;
-    string canvas_url = 2;
-    string track_uri = 3;
-    string file_id = 4;
-  }
-  repeated Canvas canvases = 1;
-}
-`;
-
-// Parse the structure
-const root = protobuf.parse(protoDefinition).root;
-const CanvasRequest = root.lookupType("CanvasRequest");
-const CanvasResponse = root.lookupType("CanvasResponse");
-
-// 2. The main Serverless Function
 export default async function handler(req, res) {
-  // Allow CORS so you can call this API from anywhere
+  // Allow any site to call this API
   res.setHeader('Access-Control-Allow-Origin', '*');
 
+  // Extract ID and Token from URL: ?id=...&token=...
   const { id, token } = req.query;
 
   if (!id || !token) {
-    return res.status(400).json({ success: false, error: "Missing ?id=... or &token=..." });
+    return res.status(400).json({ success: false, error: "Missing ?id=YOUR_ID or &token=YOUR_TOKEN in URL" });
   }
 
-  // Format the ID correctly
+  // Auto-format the URI just like Spotify requires
   const trackUri = id.startsWith('spotify:track:') ? id : `spotify:track:${id}`;
 
   try {
-    // Build the Protobuf Request
-    const payload = { tracks: [{ track_uri: trackUri }] };
-    const message = CanvasRequest.create(payload);
-    const requestBytes = CanvasRequest.encode(message).finish();
+    // Import YOUR original compiled protobuf file
+    const { CanvasRequest, CanvasResponse } = (await import('../proto/_canvas_pb.cjs')).default;
 
-    // Fetch from Spotify
+    // Build the request exactly as you did in your tests
+    const canvasRequest = new CanvasRequest();
+    const track = new CanvasRequest.Track();
+    track.setTrackUri(trackUri);
+    canvasRequest.addTracks(track);
+
+    const requestBytes = canvasRequest.serializeBinary();
+
+    // Fetch from Spotify Canvas API
     const response = await axios.post(
       'https://spclient.wg.spotify.com/canvaz-cache/v0/canvases',
       requestBytes,
       {
-        responseType: 'arraybuffer', // Required for Protobuf
+        responseType: 'arraybuffer',
         headers: {
           'Accept': 'application/protobuf',
           'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept-Language': 'en',
+          'User-Agent': 'Spotify/9.0.34.593 iOS/18.4 (iPhone15,3)',
+          'Accept-Encoding': 'gzip, deflate, br',
           'Authorization': `Bearer ${token}`,
         },
       }
     );
 
-    // Decode the binary response into readable JSON
-    const decodedMessage = CanvasResponse.decode(new Uint8Array(response.data));
-    const canvasData = CanvasResponse.toObject(decodedMessage, {
-      defaults: true,
-      arrays: true,
-      objects: true
-    });
+    if (response.status !== 200) {
+      return res.status(response.status).json({ success: false, error: "Canvas fetch failed from Spotify" });
+    }
 
-    // Return the final result!
-    return res.status(200).json({ success: true, trackId: id, data: canvasData });
+    // Decode using your reliable generated protobuf logic
+    const parsed = CanvasResponse.deserializeBinary(response.data).toObject();
+    
+    return res.status(200).json({ success: true, trackId: id, data: parsed });
 
   } catch (error) {
-    console.error("Canvas API Error:", error.message);
-    return res.status(500).json({ 
-      success: false, 
-      error: "Failed to fetch Canvas. Make sure your Spotify token is valid." 
-    });
+    console.error("Canvas Request Error:", error.message);
+    return res.status(500).json({ success: false, error: "Failed to fetch Canvas. Ensure your token is valid." });
   }
 }
